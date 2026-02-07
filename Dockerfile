@@ -1,47 +1,49 @@
-# Use an official Python runtime as a parent image (Alpine-based for minimal vulnerabilities)
-FROM python:3.13-alpine
+FROM python:3.12-slim
 
-# Set the working directory in the container
+# Установка Node.js (для Supergateway)
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
-# Prevent Python from writing pyc files to disc
-ENV PYTHONDONTWRITEBYTECODE=1
-# Ensure Python output is sent straight to terminal (useful for logs)
-ENV PYTHONUNBUFFERED=1
-
-# Install system dependencies if needed (e.g., for certain Python packages)
-# RUN apt-get update && apt-get install -y --no-install-recommends some-package && rm -rf /var/lib/apt/lists/*
-
-# Copy dependency definition files
-# If using Poetry:
-# COPY pyproject.toml poetry.lock* ./
-# RUN pip install --no-cache-dir poetry
-# RUN poetry config virtualenvs.create false && poetry install --no-dev --no-interaction --no-ansi
-# If using pip with requirements.txt:
-COPY requirements.txt ./
-RUN pip install --no-cache-dir --upgrade pip
+# Копируем и устанавливаем Python-зависимости
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application code
-COPY main.py .
-# COPY session_string_generator.py . # Optional: if needed within the container, otherwise can be run outside
+# Копируем код сервера
+COPY . .
 
-# Create a non-root user and switch to it
-RUN adduser --disabled-password --gecos "" appuser && chown -R appuser:appuser /app
-USER appuser
+# Порт для SSE (Railway назначит через переменную PORT)
+ENV PORT=8000
+EXPOSE 8000
 
-# Define environment variables needed by the application
-# These should be provided at runtime, not hardcoded (especially secrets)
-ENV TELEGRAM_API_ID=""
-ENV TELEGRAM_API_HASH=""
-# Specify one of the following at runtime:
-# Default session filename
-ENV TELEGRAM_SESSION_NAME="telegram_mcp_session"
-# Or provide the session string directly
-ENV TELEGRAM_SESSION_STRING=""
+# Запускаем telegram-mcp через Supergateway (stdio → SSE)
+CMD npx -y supergateway \
+    --stdio "python main.py" \
+    --port ${PORT}
+```
 
-# Expose any ports if the application were a web server (not needed for stdio MCP)
-# EXPOSE 8000
+### 4. Деплой на Railway
 
-# Define the command to run the application
-CMD ["python", "main.py"] 
+1. Зайдите на [railway.app](https://railway.app) и создайте новый проект
+2. Выберите **Deploy from GitHub repo** → подключите свой форк
+3. Railway автоматически обнаружит `Dockerfile` и начнёт сборку
+
+### 5. Настройте переменные окружения
+
+В настройках сервиса на Railway (вкладка **Variables**) добавьте:
+
+| Переменная | Значение |
+|---|---|
+| `TELEGRAM_API_ID` | ваш API ID |
+| `TELEGRAM_API_HASH` | ваш API Hash |
+| `TELEGRAM_SESSION_STRING` | строка сессии из шага 2 |
+| `PORT` | `8000` (или Railway назначит автоматически) |
+
+### 6. Откройте публичный домен
+
+В разделе **Settings → Networking** Railway сервиса нажмите **Generate Domain**. Вы получите URL вроде:
+```
+https://telegram-mcp-production-xxxx.up.railway.app
