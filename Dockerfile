@@ -17,4 +17,9 @@ USER appuser
 
 EXPOSE 8080
 
-CMD sh -c "python -c 'import main; print(\"import OK\")' 2>&1; echo '---'; env | grep TELEGRAM; echo '---'; mcp-proxy --host=0.0.0.0 --port=${PORT:-8080} -- python main.py"
+CMD sh -c "mcp-proxy --host=0.0.0.0 --port=${PORT:-8080} \
+  -e TELEGRAM_API_ID=${TELEGRAM_API_ID} \
+  -e TELEGRAM_API_HASH=${TELEGRAM_API_HASH} \
+  -e TELEGRAM_SESSION_STRING=${TELEGRAM_SESSION_STRING} \
+  -e TELEGRAM_SESSION_NAME=${TELEGRAM_SESSION_NAME} \
+  -- python main.py"
