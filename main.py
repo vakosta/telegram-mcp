@@ -510,6 +510,8 @@ def _media_type(message) -> Optional[str]:
 
 async def _on_new_message(event: events.NewMessage.Event) -> None:
     try:
+        if event.message.out:
+            return
         payload: dict = {
             "event_type": "new_message",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -686,14 +688,6 @@ async def _on_inline_query(event: events.InlineQuery.Event) -> None:
 def register_webhook_handlers(tg_client: TelegramClient) -> None:
     """Register all Telethon event handlers to forward events to the webhook."""
     tg_client.add_event_handler(_on_new_message, events.NewMessage)
-    tg_client.add_event_handler(_on_message_edited, events.MessageEdited)
-    tg_client.add_event_handler(_on_message_deleted, events.MessageDeleted)
-    tg_client.add_event_handler(_on_message_read, events.MessageRead)
-    tg_client.add_event_handler(_on_chat_action, events.ChatAction)
-    tg_client.add_event_handler(_on_user_update, events.UserUpdate)
-    tg_client.add_event_handler(_on_album, events.Album)
-    tg_client.add_event_handler(_on_callback_query, events.CallbackQuery)
-    tg_client.add_event_handler(_on_inline_query, events.InlineQuery)
 
 
 # ── MCP Tools ─────────────────────────────────────────────────────────────
