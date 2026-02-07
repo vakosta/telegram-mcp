@@ -32,4 +32,4 @@ ENV PORT=8000
 EXPOSE 8000
 
 # Run telegram-mcp through Supergateway (stdio → SSE bridge)
-CMD supergateway --stdio "python main.py" --port ${PORT}
+CMD sh -c "supergateway --stdio 'python main.py' --port ${PORT:-8080} --healthEndpoint /health --cors"
