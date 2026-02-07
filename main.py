@@ -33,6 +33,7 @@ from telethon.tl.types import (
     InputPeerChat,
     InputPeerChannel,
     TextWithEntities,
+    InputNotifyPeer,
 )
 import re
 from functools import wraps
@@ -517,6 +518,19 @@ async def _on_new_message(event: events.NewMessage.Event) -> None:
 
         msg_id = event.message.id
         chat_id = event.chat_id
+
+        # Skip muted chats
+        try:
+            peer = await client.get_input_entity(chat_id)
+            notify_settings = await client(
+                functions.account.GetNotifySettingsRequest(
+                    peer=InputNotifyPeer(peer=peer)
+                )
+            )
+            if notify_settings.mute_until and notify_settings.mute_until > time.time():
+                return
+        except Exception:
+            pass  # On failure, proceed with the webhook
 
         # Wait before checking read status — gives the user time to read
         # the message on their active Telegram client.
