@@ -14,6 +14,7 @@ import httpx
 import nest_asyncio
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from pythonjsonlogger import jsonlogger
 from telethon import TelegramClient, functions, utils, events
@@ -68,7 +69,10 @@ WEBHOOK_API_KEY = os.getenv("WEBHOOK_API_KEY")
 API_ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN")
 MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
 
-mcp = FastMCP("telegram")
+mcp = FastMCP(
+    "telegram",
+    transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+)
 
 if SESSION_STRING:
     # Use the string session if available
