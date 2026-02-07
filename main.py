@@ -512,10 +512,29 @@ async def _on_new_message(event: events.NewMessage.Event) -> None:
     try:
         if event.message.out:
             return
+
+        msg_id = event.message.id
+        chat_id = event.chat_id
+
+        # Wait before checking read status — gives the user time to read
+        # the message on their active Telegram client.
+        await asyncio.sleep(10)
+
+        # Check if the message was read during the delay
+        try:
+            dialogs = await client.get_dialogs()
+            for dialog in dialogs:
+                if dialog.entity.id == chat_id:
+                    if dialog.read_inbox_max_id >= msg_id:
+                        return  # Already read, skip
+                    break
+        except Exception:
+            pass  # On failure, send the webhook anyway
+
         payload: dict = {
             "event_type": "new_message",
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "message_id": event.message.id,
+            "message_id": msg_id,
             "text": event.message.text or "",
             "is_outgoing": event.message.out,
             "has_media": event.message.media is not None,
