@@ -65,6 +65,8 @@ SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING")
 
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 WEBHOOK_API_KEY = os.getenv("WEBHOOK_API_KEY")
+API_ACCESS_TOKEN = os.getenv("API_ACCESS_TOKEN")
+MCP_TRANSPORT = os.getenv("MCP_TRANSPORT", "stdio")
 
 mcp = FastMCP("telegram")
 
@@ -2948,6 +2950,29 @@ async def get_message_reactions(
         )
 
 
+class BearerAuthMiddleware:
+    """ASGI middleware that validates Bearer token on HTTP requests."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] == "http":
+            headers = dict(scope.get("headers", []))
+            auth_header = headers.get(b"authorization", b"").decode()
+            if auth_header != f"Bearer {API_ACCESS_TOKEN}":
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 401,
+                        "headers": [[b"content-type", b"text/plain"]],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b"Unauthorized"})
+                return
+        await self.app(scope, receive, send)
+
+
 async def _main() -> None:
     try:
         # Start the Telethon client non-interactively
@@ -2958,9 +2983,24 @@ async def _main() -> None:
             register_webhook_handlers(client)
             print(f"Webhook handlers registered → {WEBHOOK_URL}")
 
-        print("Telegram client started. Running MCP server...")
-        # Use the asynchronous entrypoint instead of mcp.run()
-        await mcp.run_stdio_async()
+        if MCP_TRANSPORT == "sse":
+            import uvicorn
+
+            host = os.getenv("HOST", "0.0.0.0")
+            port = int(os.getenv("PORT", "8080"))
+
+            app = mcp.sse_app()
+            if API_ACCESS_TOKEN:
+                app.add_middleware(BearerAuthMiddleware)
+
+            print(f"Telegram client started. Running MCP SSE server on {host}:{port}...")
+            config = uvicorn.Config(app, host=host, port=port, log_level="info")
+            server = uvicorn.Server(config)
+            await server.serve()
+        else:
+            print("Telegram client started. Running MCP server...")
+            # Use the asynchronous entrypoint instead of mcp.run()
+            await mcp.run_stdio_async()
     except Exception as e:
         print(f"Error starting client: {e}", file=sys.stderr)
         if isinstance(e, sqlite3.OperationalError) and "database is locked" in str(e):
