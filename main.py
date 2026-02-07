@@ -359,8 +359,86 @@ async def _get_webhook_client() -> httpx.AsyncClient:
     return _webhook_http_client
 
 
+def _format_webhook_message(payload: dict) -> str:
+    """Format a webhook payload into a human-readable message string."""
+    event_type = payload.get("event_type", "unknown")
+    chat = payload.get("chat_name") or payload.get("chat_id") or "unknown chat"
+    sender = payload.get("sender_name") or payload.get("sender_username") or ""
+    direction = ""
+
+    if event_type == "new_message":
+        direction = "\u2b06\ufe0f out" if payload.get("is_outgoing") else "\u2b07\ufe0f in"
+        text = payload.get("text") or ""
+        media = f" [{payload['media_type']}]" if payload.get("media_type") else ""
+        parts = [f"[Telegram {direction}]"]
+        if sender:
+            parts.append(f"{sender}")
+        parts.append(f"in {chat}:")
+        if text:
+            parts.append(text)
+        if media:
+            parts.append(media)
+        return " ".join(parts)
+
+    elif event_type == "message_edited":
+        parts = [f"[Telegram edited]"]
+        if sender:
+            parts.append(f"{sender}")
+        parts.append(f"in {chat}: {payload.get('text', '')}")
+        return " ".join(parts)
+
+    elif event_type == "message_deleted":
+        ids = payload.get("deleted_ids", [])
+        return f"[Telegram deleted] {len(ids)} message(s) in {chat} (IDs: {ids})"
+
+    elif event_type == "message_read":
+        direction = "inbox" if payload.get("inbox") else "outbox"
+        return f"[Telegram read] {direction} in {chat} up to message {payload.get('max_id')}"
+
+    elif event_type == "chat_action":
+        action = payload.get("action_type", "unknown")
+        parts = [f"[Telegram action] {action}"]
+        if sender:
+            parts.append(f"by {sender}")
+        parts.append(f"in {chat}")
+        if payload.get("new_title"):
+            parts.append(f"- new title: {payload['new_title']}")
+        return " ".join(parts)
+
+    elif event_type == "user_update":
+        status = payload.get("status") or "unknown"
+        return f"[Telegram status] User {payload.get('user_id')} is {status}"
+
+    elif event_type == "album":
+        count = len(payload.get("messages", []))
+        parts = [f"[Telegram album] {count} item(s)"]
+        if sender:
+            parts.append(f"from {sender}")
+        parts.append(f"in {chat}")
+        return " ".join(parts)
+
+    elif event_type == "callback_query":
+        data = payload.get("data") or ""
+        parts = [f"[Telegram callback]"]
+        if sender:
+            parts.append(f"{sender}")
+        parts.append(f"in {chat}: {data}")
+        return " ".join(parts)
+
+    elif event_type == "inline_query":
+        text = payload.get("text") or ""
+        parts = [f"[Telegram inline]"]
+        if sender:
+            parts.append(f"{sender}:")
+        parts.append(text)
+        return " ".join(parts)
+
+    else:
+        return f"[Telegram {event_type}] {json.dumps(payload)}"
+
+
 async def send_webhook(payload: dict) -> None:
-    """POST a JSON payload to WEBHOOK_URL. Errors are logged, never propagated."""
+    """POST a webhook event. Formats payload as {message: ...}. Errors are logged, never propagated."""
     if not WEBHOOK_URL:
         return
     try:
@@ -368,7 +446,8 @@ async def send_webhook(payload: dict) -> None:
         headers = {}
         if WEBHOOK_API_KEY:
             headers["Authorization"] = f"Bearer {WEBHOOK_API_KEY}"
-        resp = await http_client.post(WEBHOOK_URL, json=payload, headers=headers)
+        message_text = _format_webhook_message(payload)
+        resp = await http_client.post(WEBHOOK_URL, json={"message": message_text}, headers=headers)
         if resp.status_code >= 400:
             body = resp.text[:500]
             logger.error(f"Webhook returned HTTP {resp.status_code}: {body}")
