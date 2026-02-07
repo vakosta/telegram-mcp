@@ -6,7 +6,7 @@ import asyncio
 import sqlite3
 import logging
 import mimetypes
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import List, Dict, Optional, Union, Any
 
@@ -116,6 +116,10 @@ except Exception as log_error:
     # Fallback to console-only logging
     logger.addHandler(console_handler)
     logger.error(f"Failed to set up log file handler: {log_error}")
+
+# Silence httpx INFO-level request logging (it logs every HTTP request)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 # Error code prefix mapping for better error tracing
@@ -364,7 +368,9 @@ async def send_webhook(payload: dict) -> None:
         headers = {}
         if WEBHOOK_API_KEY:
             headers["Authorization"] = f"Bearer {WEBHOOK_API_KEY}"
-        await http_client.post(WEBHOOK_URL, json=payload, headers=headers)
+        resp = await http_client.post(WEBHOOK_URL, json=payload, headers=headers)
+        if resp.status_code >= 400:
+            logger.error(f"Webhook returned HTTP {resp.status_code}")
     except Exception as exc:
         logger.error(f"Webhook delivery failed: {exc}")
 
@@ -426,7 +432,7 @@ async def _on_new_message(event: events.NewMessage.Event) -> None:
     try:
         payload: dict = {
             "event_type": "new_message",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "message_id": event.message.id,
             "text": event.message.text or "",
             "is_outgoing": event.message.out,
@@ -447,7 +453,7 @@ async def _on_message_edited(event: events.MessageEdited.Event) -> None:
     try:
         payload: dict = {
             "event_type": "message_edited",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "message_id": event.message.id,
             "text": event.message.text or "",
             "edit_date": event.message.edit_date.isoformat() + "Z" if event.message.edit_date else None,
@@ -463,7 +469,7 @@ async def _on_message_deleted(event: events.MessageDeleted.Event) -> None:
     try:
         payload: dict = {
             "event_type": "message_deleted",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "deleted_ids": event.deleted_ids,
         }
         payload.update(await _get_chat_info(event))
@@ -476,7 +482,7 @@ async def _on_message_read(event: events.MessageRead.Event) -> None:
     try:
         payload: dict = {
             "event_type": "message_read",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "max_id": event.max_id,
             "inbox": event.inbox,
         }
@@ -510,7 +516,7 @@ async def _on_chat_action(event: events.ChatAction.Event) -> None:
 
         payload: dict = {
             "event_type": "chat_action",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "action_type": action_type,
             "new_title": event.new_title,
         }
@@ -535,7 +541,7 @@ async def _on_user_update(event: events.UserUpdate.Event) -> None:
 
         payload: dict = {
             "event_type": "user_update",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "user_id": event.user_id,
             "status": status,
         }
@@ -556,7 +562,7 @@ async def _on_album(event: events.Album.Event) -> None:
             })
         payload: dict = {
             "event_type": "album",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "grouped_id": event.grouped_id,
             "messages": messages_info,
         }
@@ -571,7 +577,7 @@ async def _on_callback_query(event: events.CallbackQuery.Event) -> None:
     try:
         payload: dict = {
             "event_type": "callback_query",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "query_id": event.query.query_id,
             "message_id": event.message_id,
             "data": event.data.decode("utf-8", errors="replace") if event.data else None,
@@ -587,7 +593,7 @@ async def _on_inline_query(event: events.InlineQuery.Event) -> None:
     try:
         payload: dict = {
             "event_type": "inline_query",
-            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
             "query_id": event.query.query_id,
             "text": event.text,
         }
