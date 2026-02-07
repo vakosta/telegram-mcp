@@ -370,7 +370,8 @@ async def send_webhook(payload: dict) -> None:
             headers["Authorization"] = f"Bearer {WEBHOOK_API_KEY}"
         resp = await http_client.post(WEBHOOK_URL, json=payload, headers=headers)
         if resp.status_code >= 400:
-            logger.error(f"Webhook returned HTTP {resp.status_code}")
+            body = resp.text[:500]
+            logger.error(f"Webhook returned HTTP {resp.status_code}: {body}")
     except Exception as exc:
         logger.error(f"Webhook delivery failed: {exc}")
 
