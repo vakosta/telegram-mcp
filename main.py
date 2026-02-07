@@ -11,12 +11,13 @@ from enum import Enum
 from typing import List, Dict, Optional, Union, Any
 
 # Third-party libraries
+import httpx
 import nest_asyncio
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 from pythonjsonlogger import jsonlogger
-from telethon import TelegramClient, functions, utils
+from telethon import TelegramClient, functions, utils, events
 from telethon.sessions import StringSession
 from telethon.tl.types import (
     User,
@@ -65,6 +66,9 @@ TELEGRAM_SESSION_NAME = os.getenv("TELEGRAM_SESSION_NAME")
 
 # Check if a string session exists in environment, otherwise use file-based session
 SESSION_STRING = os.getenv("TELEGRAM_SESSION_STRING")
+
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_API_KEY = os.getenv("WEBHOOK_API_KEY")
 
 mcp = FastMCP("telegram")
 
@@ -337,6 +341,276 @@ def get_engagement_info(message) -> str:
         engagement_parts.append(f"reactions:{total_reactions}")
     return f" | {', '.join(engagement_parts)}" if engagement_parts else ""
 
+
+# ── Webhook infrastructure ────────────────────────────────────────────────
+
+_webhook_http_client: Optional[httpx.AsyncClient] = None
+
+
+async def _get_webhook_client() -> httpx.AsyncClient:
+    """Lazily initialize and return the shared httpx client for webhooks."""
+    global _webhook_http_client
+    if _webhook_http_client is None or _webhook_http_client.is_closed:
+        _webhook_http_client = httpx.AsyncClient(timeout=10.0)
+    return _webhook_http_client
+
+
+async def send_webhook(payload: dict) -> None:
+    """POST a JSON payload to WEBHOOK_URL. Errors are logged, never propagated."""
+    if not WEBHOOK_URL:
+        return
+    try:
+        http_client = await _get_webhook_client()
+        headers = {}
+        if WEBHOOK_API_KEY:
+            headers["Authorization"] = f"Bearer {WEBHOOK_API_KEY}"
+        await http_client.post(WEBHOOK_URL, json=payload, headers=headers)
+    except Exception as exc:
+        logger.error(f"Webhook delivery failed: {exc}")
+
+
+async def _get_chat_info(event) -> dict:
+    """Safely extract chat metadata from a Telethon event."""
+    info: dict = {}
+    try:
+        chat = await event.get_chat()
+        if chat is None:
+            return info
+        info["chat_id"] = getattr(chat, "id", None)
+        if isinstance(chat, Channel):
+            info["chat_type"] = "channel" if getattr(chat, "broadcast", False) else "group"
+        elif isinstance(chat, Chat):
+            info["chat_type"] = "group"
+        elif isinstance(chat, User):
+            info["chat_type"] = "user"
+        else:
+            info["chat_type"] = "unknown"
+        info["chat_name"] = getattr(chat, "title", None) or (
+            " ".join(filter(None, [getattr(chat, "first_name", None), getattr(chat, "last_name", None)]))
+            or None
+        )
+        info["chat_username"] = getattr(chat, "username", None)
+    except Exception:
+        pass
+    return info
+
+
+async def _get_sender_info(event) -> dict:
+    """Safely extract sender metadata from a Telethon event."""
+    info: dict = {}
+    try:
+        sender = await event.get_sender()
+        if sender is None:
+            return info
+        info["sender_id"] = getattr(sender, "id", None)
+        info["sender_name"] = " ".join(
+            filter(None, [getattr(sender, "first_name", None), getattr(sender, "last_name", None)])
+        ) or None
+        info["sender_username"] = getattr(sender, "username", None)
+    except Exception:
+        pass
+    return info
+
+
+def _media_type(message) -> Optional[str]:
+    """Return a short media type string, or None."""
+    media = getattr(message, "media", None)
+    if media is None:
+        return None
+    return type(media).__name__
+
+
+# ── Event handlers ────────────────────────────────────────────────────────
+
+async def _on_new_message(event: events.NewMessage.Event) -> None:
+    try:
+        payload: dict = {
+            "event_type": "new_message",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "message_id": event.message.id,
+            "text": event.message.text or "",
+            "is_outgoing": event.message.out,
+            "has_media": event.message.media is not None,
+            "media_type": _media_type(event.message),
+            "reply_to_message_id": getattr(event.message.reply_to, "reply_to_msg_id", None)
+            if event.message.reply_to
+            else None,
+        }
+        payload.update(await _get_chat_info(event))
+        payload.update(await _get_sender_info(event))
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (new_message): {exc}")
+
+
+async def _on_message_edited(event: events.MessageEdited.Event) -> None:
+    try:
+        payload: dict = {
+            "event_type": "message_edited",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "message_id": event.message.id,
+            "text": event.message.text or "",
+            "edit_date": event.message.edit_date.isoformat() + "Z" if event.message.edit_date else None,
+        }
+        payload.update(await _get_chat_info(event))
+        payload.update(await _get_sender_info(event))
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (message_edited): {exc}")
+
+
+async def _on_message_deleted(event: events.MessageDeleted.Event) -> None:
+    try:
+        payload: dict = {
+            "event_type": "message_deleted",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "deleted_ids": event.deleted_ids,
+        }
+        payload.update(await _get_chat_info(event))
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (message_deleted): {exc}")
+
+
+async def _on_message_read(event: events.MessageRead.Event) -> None:
+    try:
+        payload: dict = {
+            "event_type": "message_read",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "max_id": event.max_id,
+            "inbox": event.inbox,
+        }
+        payload.update(await _get_chat_info(event))
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (message_read): {exc}")
+
+
+async def _on_chat_action(event: events.ChatAction.Event) -> None:
+    try:
+        action_type = "unknown"
+        if event.user_joined:
+            action_type = "user_joined"
+        elif event.user_left:
+            action_type = "user_left"
+        elif event.user_kicked:
+            action_type = "user_kicked"
+        elif event.user_added:
+            action_type = "user_added"
+        elif event.new_title:
+            action_type = "title_changed"
+        elif event.new_photo:
+            action_type = "photo_changed"
+        elif event.photo_removed:
+            action_type = "photo_removed"
+        elif event.created:
+            action_type = "chat_created"
+        elif getattr(event, "new_pin", False):
+            action_type = "message_pinned"
+
+        payload: dict = {
+            "event_type": "chat_action",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "action_type": action_type,
+            "new_title": event.new_title,
+        }
+        payload.update(await _get_chat_info(event))
+        payload.update(await _get_sender_info(event))
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (chat_action): {exc}")
+
+
+async def _on_user_update(event: events.UserUpdate.Event) -> None:
+    try:
+        status = None
+        if event.typing:
+            status = "typing"
+        elif event.online:
+            status = "online"
+        elif event.recently:
+            status = "recently"
+        elif event.offline:
+            status = "offline"
+
+        payload: dict = {
+            "event_type": "user_update",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "user_id": event.user_id,
+            "status": status,
+        }
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (user_update): {exc}")
+
+
+async def _on_album(event: events.Album.Event) -> None:
+    try:
+        messages_info = []
+        for msg in event.messages:
+            messages_info.append({
+                "message_id": msg.id,
+                "text": msg.text or "",
+                "has_media": msg.media is not None,
+                "media_type": _media_type(msg),
+            })
+        payload: dict = {
+            "event_type": "album",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "grouped_id": event.grouped_id,
+            "messages": messages_info,
+        }
+        payload.update(await _get_chat_info(event))
+        payload.update(await _get_sender_info(event))
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (album): {exc}")
+
+
+async def _on_callback_query(event: events.CallbackQuery.Event) -> None:
+    try:
+        payload: dict = {
+            "event_type": "callback_query",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "query_id": event.query.query_id,
+            "message_id": event.message_id,
+            "data": event.data.decode("utf-8", errors="replace") if event.data else None,
+        }
+        payload.update(await _get_chat_info(event))
+        payload.update(await _get_sender_info(event))
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (callback_query): {exc}")
+
+
+async def _on_inline_query(event: events.InlineQuery.Event) -> None:
+    try:
+        payload: dict = {
+            "event_type": "inline_query",
+            "timestamp": datetime.utcnow().isoformat() + "Z",
+            "query_id": event.query.query_id,
+            "text": event.text,
+        }
+        payload.update(await _get_sender_info(event))
+        await send_webhook(payload)
+    except Exception as exc:
+        logger.error(f"Webhook handler error (inline_query): {exc}")
+
+
+def register_webhook_handlers(tg_client: TelegramClient) -> None:
+    """Register all Telethon event handlers to forward events to the webhook."""
+    tg_client.add_event_handler(_on_new_message, events.NewMessage)
+    tg_client.add_event_handler(_on_message_edited, events.MessageEdited)
+    tg_client.add_event_handler(_on_message_deleted, events.MessageDeleted)
+    tg_client.add_event_handler(_on_message_read, events.MessageRead)
+    tg_client.add_event_handler(_on_chat_action, events.ChatAction)
+    tg_client.add_event_handler(_on_user_update, events.UserUpdate)
+    tg_client.add_event_handler(_on_album, events.Album)
+    tg_client.add_event_handler(_on_callback_query, events.CallbackQuery)
+    tg_client.add_event_handler(_on_inline_query, events.InlineQuery)
+
+
+# ── MCP Tools ─────────────────────────────────────────────────────────────
 
 @mcp.tool(annotations=ToolAnnotations(title="Get Chats", openWorldHint=True, readOnlyHint=True))
 async def get_chats(page: int = 1, page_size: int = 20) -> str:
@@ -4130,6 +4404,10 @@ async def _main() -> None:
         print("Starting Telegram client...")
         await client.start()
 
+        if WEBHOOK_URL:
+            register_webhook_handlers(client)
+            print(f"Webhook handlers registered → {WEBHOOK_URL}")
+
         print("Telegram client started. Running MCP server...")
         # Use the asynchronous entrypoint instead of mcp.run()
         await mcp.run_stdio_async()
@@ -4141,6 +4419,9 @@ async def _main() -> None:
                 file=sys.stderr,
             )
         sys.exit(1)
+    finally:
+        if _webhook_http_client is not None:
+            await _webhook_http_client.aclose()
 
 
 def main() -> None:
